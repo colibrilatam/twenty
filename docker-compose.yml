@@ -1,0 +1,97 @@
+
+# Twenty CRM - Dokploy
+# Dominio gestionado desde Dokploy, servicio server:3000
+
+x-twenty-env: &twenty-env
+  SERVER_URL: ${SERVER_URL:?Configura SERVER_URL}
+  PG_DATABASE_URL: postgres://${PG_DATABASE_USER:-twenty}:${PG_DATABASE_PASSWORD:?Configura PG_DATABASE_PASSWORD}@db:5432/${PG_DATABASE_NAME:-twenty}
+  REDIS_URL: redis://redis:6379
+  ENCRYPTION_KEY: ${ENCRYPTION_KEY:?Configura ENCRYPTION_KEY}
+  STORAGE_TYPE: local
+
+services:
+  init-storage:
+    image: alpine:3.21
+    user: "0:0"
+    command: ["sh", "-c", "chown -R 1000:1000 /storage"]
+    volumes:
+      - twenty-storage:/storage
+    restart: "no"
+
+  server:
+    image: twentycrm/twenty:v2.55.0
+    stop_grace_period: 120s
+    expose:
+      - "3000"
+    environment:
+      <<: *twenty-env
+      NODE_PORT: "3000"
+      DISABLE_DB_MIGRATIONS: "false"
+      DISABLE_CRON_JOBS_REGISTRATION: "false"
+    volumes:
+      - twenty-storage:/app/packages/twenty-server/.local-storage
+    depends_on:
+      init-storage:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://127.0.0.1:3000/healthz"]
+      interval: 15s
+      timeout: 5s
+      start_period: 60s
+      retries: 20
+    restart: unless-stopped
+
+  worker:
+    image: twentycrm/twenty:v2.55.0
+    command: ["yarn", "worker:prod"]
+    stop_grace_period: 120s
+    environment:
+      <<: *twenty-env
+      DISABLE_DB_MIGRATIONS: "true"
+      DISABLE_CRON_JOBS_REGISTRATION: "true"
+    volumes:
+      - twenty-storage:/app/packages/twenty-server/.local-storage
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      server:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ${PG_DATABASE_NAME:-twenty}
+      POSTGRES_USER: ${PG_DATABASE_USER:-twenty}
+      POSTGRES_PASSWORD: ${PG_DATABASE_PASSWORD:?Configura PG_DATABASE_PASSWORD}
+    volumes:
+      - twenty-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - twenty-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+    restart: unless-stopped
+
+volumes:
+  twenty-postgres:
+  twenty-redis:
+  twenty-storage:
